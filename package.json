@@ -1,0 +1,216 @@
+{
+  "name": "cbm-search",
+  "displayName": "CBM Search",
+  "description": "Code search powered by codebase-memory-mcp knowledge graph",
+  "version": "0.0.1",
+  "publisher": "codebase-memory",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "cbm.indexProject",
+        "title": "CBM: Index Current Project"
+      },
+      {
+        "command": "cbm.deleteIndex",
+        "title": "CBM: Delete Project Index"
+      },
+      {
+        "command": "cbm.searchGraph",
+        "title": "CBM: Search Graph"
+      },
+      {
+        "command": "cbm.searchCode",
+        "title": "CBM: Search Code"
+      },
+      {
+        "command": "cbm.traceCallers",
+        "title": "CBM: Trace Callers"
+      },
+      {
+        "command": "cbm.traceCallees",
+        "title": "CBM: Trace Callees"
+      },
+      {
+        "command": "cbm.getSnippet",
+        "title": "CBM: Get Code Snippet"
+      },
+      {
+        "command": "cbm.getArchitecture",
+        "title": "CBM: Architecture Overview"
+      },
+      {
+        "command": "cbm.cypherQuery",
+        "title": "CBM: Cypher Query"
+      },
+      {
+        "command": "cbm.getGraphSchema",
+        "title": "CBM: Graph Schema"
+      },
+      {
+        "command": "cbm.manageAdr",
+        "title": "CBM: Architecture Decision Record"
+      },
+      {
+        "command": "cbm.listProjects",
+        "title": "CBM: List Projects"
+      },
+      {
+        "command": "cbm.indexStatus",
+        "title": "CBM: Index Status"
+      },
+      {
+        "command": "cbm.detectChanges",
+        "title": "CBM: Detect Changes"
+      },
+      {
+        "command": "cbm.ingestTraces",
+        "title": "CBM: Ingest Traces from File"
+      },
+      {
+        "command": "cbm.openPrompt",
+        "title": "CBM: Open Interactive Prompt"
+      },
+      {
+        "command": "cbm.refresh",
+        "title": "CBM: Refresh"
+      },
+      {
+        "command": "cbm.clearResults",
+        "title": "CBM: Clear Results"
+      },
+      {
+        "command": "cbm.deleteSelectedProject",
+        "title": "CBM: Delete Selected Project"
+      },
+      {
+        "command": "cbm.revealProjectFolder",
+        "title": "CBM: Open Project Folder"
+      },
+      {
+        "command": "cbm.openProjectInNewWindow",
+        "title": "CBM: Open Project in New Window"
+      },
+      {
+        "command": "cbm.saveAdrContent",
+        "title": "CBM: Save ADR Content"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "cbm-sidebar",
+          "title": "CBM Search",
+          "icon": "resources/cbm-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "cbm-sidebar": [
+        {
+          "id": "cbm.projects",
+          "name": "Projects"
+        },
+        {
+          "id": "cbm.results",
+          "name": "Results"
+        }
+      ]
+    },
+    "viewCommands": [
+      {
+        "command": "cbm.indexProject",
+        "title": "Index Project",
+        "when": "view == cbm.projects",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "cbm.deleteIndex",
+        "title": "Delete Index",
+        "when": "view == cbm.projects",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "cbm.refresh",
+        "title": "Refresh",
+        "when": "view == cbm.projects",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "cbm.clearResults",
+        "title": "Clear Results",
+        "when": "view == cbm.results",
+        "icon": "$(clear-all)"
+      }
+    ],
+    "configuration": {
+      "title": "CBM Search",
+      "properties": {
+        "cbm.binaryPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to codebase-memory-mcp binary. Leave empty for auto-detect."
+        },
+        "cbm.autoIndex": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically index projects on first open."
+        }
+      }
+    },
+    "keybindings": [
+      {
+        "command": "cbm.searchGraph",
+        "key": "ctrl+shift+g",
+        "mac": "cmd+shift+g"
+      },
+      {
+        "command": "cbm.searchCode",
+        "key": "ctrl+shift+f",
+        "mac": "cmd+shift+f"
+      },
+      {
+        "command": "cbm.deleteSelectedProject",
+        "key": "ctrl+shift+k",
+        "mac": "cmd+alt+k"
+      },
+      {
+        "command": "cbm.saveAdrContent",
+        "key": "ctrl+enter",
+        "mac": "cmd+enter",
+        "when": "resourceScheme == untitled"
+      }
+    ],
+    "menus": {
+      "view/item/context": [
+        {
+          "command": "cbm.openProjectInNewWindow",
+          "when": "view == cbm.projects && viewItem == project",
+          "group": "cbm@1"
+        },
+        {
+          "command": "cbm.deleteIndex",
+          "when": "view == cbm.projects && viewItem == project",
+          "group": "cbm@2"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.3.0"
+  }
+}
