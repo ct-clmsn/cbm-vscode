@@ -2,7 +2,7 @@
   "name": "cbm-search",
   "displayName": "CBM Search",
   "description": "Code search powered by codebase-memory-mcp knowledge graph",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "publisher": "codebase-memory",
   "engines": {
     "vscode": "^1.85.0"

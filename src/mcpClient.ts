@@ -261,7 +261,7 @@ export class McpClient {
       await this.request('initialize', {
         protocolVersion: '2024-11-05',
         capabilities: {},
-        clientInfo: { name: 'cbm-vscode', version: '0.0.1' },
+        clientInfo: { name: 'cbm-vscode', version: '0.0.2' },
       });
 
       this.notify('notifications/initialized');
