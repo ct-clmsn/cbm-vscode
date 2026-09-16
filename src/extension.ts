@@ -236,7 +236,9 @@ async function runSearch(
 ): Promise<string> {
   // Request a large limit so we capture as many results as the server allows
   // in one call. search_code has no offset, so a big limit is the only lever.
-  const args: Record<string, any> = { project, ...userArgs, limit: 500 };
+  // Also request JSON explicitly: newer server versions default to compact
+  // tree text (TOON), which this extension has never been able to parse.
+  const args: Record<string, any> = { project, ...userArgs, limit: 500, format: 'json' };
   const result = await client!.callTool(tool, args);
   return result.content.filter(c => c.type === 'text').map(c => c.text).join('\n');
 }
@@ -364,61 +366,278 @@ function codeAdvancedOptions(current: Record<string, any>): AdvancedOption[] {
 }
 
 
-// Parse the search_graph / search_code JSON response and populate the
-// Results tree view with a flat, clickable list of results.
+// A flat, display-ready search row.
+interface SearchRow {
+  label: string;
+  file: string;
+  line: number;
+  detail?: string;
+}
+
+function colIndexOf(cols: string[], names: string[]): number {
+  for (const n of names) {
+    const i = cols.indexOf(n);
+    if (i >= 0) return i;
+  }
+  return -1;
+}
+
+// Map column-name -> cell position, given a `cols` header + row arrays
+// (the format both newer search_graph/search_code use: rows + cols).
+function rowsFromColumns(cols: string[], rawRows: any[][]): SearchRow[] {
+  const iName = colIndexOf(cols, ['name', 'qn', 'qualified_name', 'symbol']);
+  const iFile = colIndexOf(cols, ['file', 'file_path', 'path']);
+  const iLine = colIndexOf(cols, ['lines', 'line', 'start_line']);
+  const iLabel = colIndexOf(cols, ['label']);
+  return rawRows.map((r) => {
+    const file = iFile >= 0 ? String(r[iFile] ?? '') : '';
+    const parsedLine = parseInt(iLine >= 0 ? String(r[iLine] ?? '') : '', 10);
+    const line = Number.isFinite(parsedLine) ? parsedLine : 0;
+    let label = iName >= 0 ? String(r[iName] ?? '') : '';
+    if (!label && iLabel >= 0) label = String(r[iLabel] ?? '');
+    if (!label) label = file.split('/').pop() || '(row)';
+    return {
+      label,
+      file,
+      line,
+      detail: iLabel >= 0 && iName >= 0 && r[iLabel] != null ? String(r[iLabel]) : undefined,
+    };
+  });
+}
+
+// Newer search_graph groups rows under `groups` (each with qn_prefix + file).
+function rowsFromGroups(groups: any[], cols: string[]): SearchRow[] {
+  const out: SearchRow[] = [];
+  for (const g of groups) {
+    const prefix = g.qn_prefix ? `${g.qn_prefix}.` : '';
+    const file = g.file ? String(g.file) : '';
+    const rawRows = Array.isArray(g.rows) ? g.rows : [];
+    out.push(...rowsFromColumns(cols, rawRows).map((r) => ({
+      ...r,
+      label: prefix ? `${prefix}${r.label}` : r.label,
+      file: file || r.file,
+    })));
+  }
+  return out;
+}
+
+// Legacy format: arrays of row objects (results/matches/semantic_results).
+function rowsFromObjects(objects: any[]): SearchRow[] {
+  return objects.map((r) => {
+    const file = r.file_path || r.file || r.path || '';
+    const rawLine = Number(r.start_line || r.line || 0);
+    const line = Number.isFinite(rawLine) ? rawLine : 0;
+    const label =
+      r.name || r.node || r.symbol || r.function || r.qualified_name || r.qn ||
+      file.split('/').pop() || '(result)';
+    return {
+      label: String(label),
+      file: String(file),
+      line,
+      detail: typeof r.label === 'string' ? r.label : undefined,
+    };
+  });
+}
+
+// Flatten any search response shape (old flat JSON, new cols/rows, new
+// groups, semantic buckets) into a single list of display rows. Only the
+// $rows/$groups column-matrix forms are trusted when a `cols` header is
+// present — search responses always carry one, other JSON never does.
+function extractSearchRows(parsed: any): SearchRow[] {
+  const rows: SearchRow[] = [];
+  const cols = Array.isArray(parsed.cols) ? parsed.cols.map(String) : [];
+  const isMatrix = (v: any) => Array.isArray(v) && v.every((r) => Array.isArray(r));
+  if (cols.length > 0 && Array.isArray(parsed.groups)) {
+    rows.push(...rowsFromGroups(parsed.groups, cols));
+  } else if (cols.length > 0 && isMatrix(parsed.rows)) {
+    rows.push(...rowsFromColumns(cols, parsed.rows));
+  } else if (Array.isArray(parsed.results)) {
+    rows.push(...rowsFromObjects(parsed.results));
+  } else if (Array.isArray(parsed.matches)) {
+    rows.push(...rowsFromObjects(parsed.matches));
+  }
+  const sem = parsed.semantic;
+  if (sem && typeof sem === 'object' && Array.isArray(sem.rows)) {
+    rows.push(...rowsFromColumns(Array.isArray(sem.cols) ? sem.cols.map(String) : [], sem.rows));
+  } else if (Array.isArray(parsed.semantic_results)) {
+    rows.push(...rowsFromObjects(parsed.semantic_results));
+  }
+  // search_code mode:"files" returns a plain list of file paths.
+  if (Array.isArray(parsed.files)) {
+    rows.push(...parsed.files
+      .filter((f: any) => typeof f === 'string' && f.length > 0)
+      .map((f: string) => ({
+        label: f.split('/').pop() || f,
+        file: f,
+        line: 0,
+      })));
+  }
+  return rows;
+}
+
+// Search metadata surfaced as the header tooltip (search mode, totals, ...).
+function collectMeta(parsed: any): string[] {
+  const out: string[] = [];
+  const push = (k: string, v: any) => {
+    if (v === undefined || v === null || v === '' || v === false) return;
+    out.push(`${k}: ${v}`);
+  };
+  push('total', parsed.total);
+  push('total_results', parsed.total_results);
+  push('count', parsed.count);
+  push('search_mode', parsed.search_mode);
+  push('mode', parsed.mode);
+  push('total_grep_matches', parsed.total_grep_matches);
+  push('raw_match_count', parsed.raw_match_count);
+  push('dedup_ratio', parsed.dedup_ratio);
+  if (parsed.has_more === true) out.push('has_more: true');
+  push('elapsed_ms', parsed.elapsed_ms);
+  if (Array.isArray(parsed.warnings) && parsed.warnings.length) {
+    out.push(`warnings: ${parsed.warnings.join('; ')}`);
+  }
+  push('hint', parsed.hint);
+  push('warning', parsed.warning);
+  push('warning_slow', parsed.warning_slow);
+  return out;
+}
+
+// Best-effort parser for the server's compact tree text (TOON) format,
+// used by older binaries that ignore format:"json". Returns null when the
+// text does not look like tree output (then it is shown as raw text).
+// Handles the indented rows the server emits, plus the condensed
+// `k:v <- k:v <- ...` form (no indentation) sometimes seen when a tool
+// result is passed through an agent UI: the `results: N (cols: ...)` header
+// reserves exactly N following lines as rows.
+const TREE_SCALAR_KEYS = new Set([
+  'hint', 'warning', 'warning_slow',
+]);
+function parseTreeText(text: string): { rows: SearchRow[]; meta: string[] } | null {
+  const norm = text.replace(/\s*<-\s*/g, '\n');
+  const lines = norm.split('\n');
+  const meta: string[] = [];
+  const rows: SearchRow[] = [];
+  let cols: string[] = [];
+  let rowsLeft = 0;
+
+  const scalarMatch = (line: string): { key: string; val: string } | null => {
+    const m = line.match(/^([A-Za-z_][A-Za-z_0-9]*):\s+(.*)$/);
+    if (!m) return null;
+    const key = m[1];
+    const val = m[2].trim();
+    // Indented lines are rows, never scalars.
+    if (/^\s/.test(line)) return null;
+    return { key, val };
+  };
+  const isScalar = (key: string, val: string): boolean =>
+    TREE_SCALAR_KEYS.has(key) || /^\S+\s*$/.test(val);
+
+  for (const raw of lines) {
+    const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
+    const sc = scalarMatch(line);
+    if (sc) {
+      const cm = sc.val.match(/^(\d+)\s*\(cols:\s*(.*)\)$/);
+      if (cm) {
+        cols = cm[2].split(/\s+/);
+        rowsLeft = parseInt(cm[1], 10);
+        continue;
+      }
+      // Genuine scalar (single value or known free-text key): metadata.
+      if (isScalar(sc.key, sc.val) || rowsLeft === 0) {
+        if (sc.key === 'has_more' && sc.val === 'false') continue;
+        meta.push(`${sc.key}: ${isScalar(sc.key, sc.val) ? sc.val : sc.val.split(/\s{2,}/)[0]}`);
+        continue;
+      }
+    }
+    // Within an open table the next N lines are rows, indented or not.
+    if (rowsLeft > 0) {
+      let cells = line.trim().split(/\s{2,}/).filter(Boolean);
+      // Condensed rows collapse cells to single spaces; recover them when the
+      // token count exactly matches the column count.
+      if (cells.length === 1) {
+        const toks = line.trim().split(/\s+/);
+        if (toks.length === cols.length) cells = toks;
+      }
+      if (cells.length > 0) {
+        rows.push(...rowsFromColumns(cols, [cells]));
+      }
+      rowsLeft--;
+    }
+  }
+  if (rows.length === 0 && meta.length === 0) return null;
+  return { rows, meta };
+}
+
+// Parse the search_graph / search_code response (JSON or tree text) and
+// populate the Results tree view with a flat, clickable list of results.
+// Search metadata (total, search_mode, elapsed_ms, ...) is surfaced as
+// the header tooltip rather than occupying a row.
 function populateResultsFromJson(text: string, title: string): void {
   const headerItem = new vscode.TreeItem(title, vscode.TreeItemCollapsibleState.Expanded);
   headerItem.iconPath = new vscode.ThemeIcon('search');
 
   let children: vscode.TreeItem[] = [];
 
+  let parsed: any = null;
   try {
-    const parsed = JSON.parse(text);
-    const semantic = parsed.semantic_results || [];
-    const results: any[] = (parsed.results || parsed.matches || []).concat(semantic);
+    parsed = JSON.parse(text);
+  } catch {
+    parsed = null;
+  }
 
-    if (parsed.total !== undefined) {
-      headerItem.description = `${parsed.total} hit${parsed.total === 1 ? '' : 's'}`;
-    } else if (parsed.total_results !== undefined) {
-      headerItem.description = `${parsed.total_results} hit${parsed.total_results === 1 ? '' : 's'}`;
-    } else if (semantic.length > 0) {
-      headerItem.description = `${semantic.length} semantic hit${semantic.length === 1 ? '' : 's'}`;
+  let rows: SearchRow[] = [];
+  let meta: string[] = [];
+
+  if (parsed && typeof parsed === 'object') {
+    rows = extractSearchRows(parsed);
+    meta = collectMeta(parsed);
+  } else {
+    const tree = parseTreeText(text);
+    if (tree) {
+      rows = tree.rows;
+      meta = tree.meta;
+    } else {
+      const leaf = new vscode.TreeItem(text.slice(0, 100), vscode.TreeItemCollapsibleState.None);
+      leaf.tooltip = text;
+      children = [leaf];
     }
+  }
 
-    if (results.length === 0) {
-      const empty = new vscode.TreeItem('No results', vscode.TreeItemCollapsibleState.None);
-      empty.description = 'try a different query or pattern';
-      empty.iconPath = new vscode.ThemeIcon('info');
-      empty.contextValue = 'empty';
-      children.push(empty);
-      (headerItem as any).children = children;
-      resultsProvider.setResults([headerItem]);
-      return;
-    }
-
+  if (children.length === 0 && rows.length === 0) {
+    const empty = new vscode.TreeItem('No results', vscode.TreeItemCollapsibleState.None);
+    empty.description = 'try a different query or pattern';
+    empty.iconPath = new vscode.ThemeIcon('info');
+    empty.contextValue = 'empty';
+    children.push(empty);
+  } else if (children.length === 0) {
     // Flat list — one row per result, each clickable to open the file.
-    children = results.map((r) => {
-      const label =
-        r.name || r.node || r.symbol || r.function || r.qualified_name || r.file || r.path || '(result)';
-      const filePath = r.file_path || r.file || r.path || '';
-      const line = r.start_line || r.line || 0;
-
-      const item = new vscode.TreeItem(label, vscode.TreeItemCollapsibleState.None);
-      item.description = filePath ? `${filePath}${line ? `:${line}` : ''}` : undefined;
+    children = rows.map((r) => {
+      const item = new vscode.TreeItem(r.label, vscode.TreeItemCollapsibleState.None);
+      const location = r.file ? `${r.file}${r.line ? `:${r.line}` : ''}` : '';
+      item.description = location && r.detail ? `${location} ${r.detail}` : location || r.detail;
       item.iconPath = new vscode.ThemeIcon('symbol-function');
-      if (filePath) {
+      if (r.detail) item.tooltip = r.detail;
+      if (r.file) {
         item.command = {
           command: 'cbm.openFile',
           title: 'Open file',
-          arguments: [filePath, line || 0],
+          arguments: [r.file, r.line || 0],
         };
       }
       return item;
     });
-  } catch {
-    // Not JSON — show raw text as a single leaf
-    const leaf = new vscode.TreeItem(text.slice(0, 100), vscode.TreeItemCollapsibleState.None);
-    children = [leaf];
+  }
+
+  // Header metrics: hit count as description, details as a tooltip.
+  const count =
+    parsed && parsed.total !== undefined ? parsed.total
+    : parsed && parsed.total_results !== undefined ? parsed.total_results
+    : parsed && parsed.count !== undefined ? parsed.count
+    : rows.length;
+  if (count !== undefined) {
+    headerItem.description = `${count} hit${count === 1 ? '' : 's'}`;
+  }
+  if (meta.length) {
+    headerItem.tooltip = meta.join(', ');
   }
 
   (headerItem as any).children = children;
